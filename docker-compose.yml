@@ -1,6 +1,43 @@
-# Starter file. Add your own services (your app, Postgres) next to payswift. Leave payswift as it is.
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quickdrop
+      POSTGRES_PASSWORD: quickdrop_secret_password
+      POSTGRES_DB: quickdrop
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quickdrop -d quickdrop"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://quickdrop:quickdrop_secret_password@postgres:5432/quickdrop
+      - PAYSWIFT_BASE_URL=http://payswift:8081
+      - APP_PORT=8000
+      - AUTO_PAY_MAX_AMOUNT=200
+      - MAX_AUTO_PAYS_PER_RIDER_PER_DAY=1
+      - LOOKBACK_DAYS_LIMIT=7
+    depends_on:
+      postgres:
+        condition: service_healthy
+      payswift:
+        condition: service_started
+
   payswift:
     build: ./payswift
     ports:
       - "8081:8081"
+
+volumes:
+  pgdata:
