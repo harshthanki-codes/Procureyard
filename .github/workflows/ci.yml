@@ -25,5 +25,19 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Unit Tests
+        env:
+          PYTHONPATH: .
         run: |
           pytest tests/ -v
+
+      - name: Run Full 24-Scenario Evaluation Benchmark
+        env:
+          PYTHONPATH: .
+          PAYSWIFT_BASE_URL: http://localhost:8081
+          DATABASE_URL: sqlite+aiosqlite:///./ci_quickdrop.db
+        run: |
+          python payswift/server.pyc &
+          sleep 2
+          python -m uvicorn app.main:app --port 8000 &
+          sleep 4
+          python evals/run.py http://localhost:8000
