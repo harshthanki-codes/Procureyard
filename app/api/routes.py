@@ -2,13 +2,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.engine import AgentEngine
-from app.db.models import TraceRecord, Rider, MessageRecord, OpsPendingItem
+from app.core.config import settings
+from app.db.models import TraceRecord, Rider, Trip, PayoutLine, MessageRecord, OpsPendingItem
 from app.db.session import get_db
-from sqlalchemy import select, delete
 from app.services.ops import OpsService
 from app.services.payswift import payswift_client
 
@@ -147,3 +147,116 @@ async def get_payswift_ledger() -> List[Dict[str, Any]]:
         return await payswift_client.list_payouts()
     except Exception as e:
         return [{"error": str(e)}]
+
+
+@router.get("/api/stats")
+async def get_dashboard_stats(session: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+    """Summary metrics for the Ops Command Center header."""
+    try:
+        payouts = await payswift_client.list_payouts()
+        total_disbursed = sum(p.get("amount", 0) for p in payouts)
+        total_payout_count = len(payouts)
+    except Exception:
+        total_disbursed = 0
+        total_payout_count = 0
+
+    pending = await OpsService.get_pending_items(session)
+    approvals_count = sum(1 for p in pending if p.get("type") == "approval")
+    escalations_count = sum(1 for p in pending if p.get("type") == "escalation")
+    pending_amount = sum(p.get("amount", 0) or 0 for p in pending if p.get("type") == "approval")
+
+    return {
+        "total_disbursed": total_disbursed,
+        "total_payout_count": total_payout_count,
+        "pending_count": len(pending),
+        "approvals_count": approvals_count,
+        "escalations_count": escalations_count,
+        "pending_amount": pending_amount,
+        "auto_pay_limit": settings.AUTO_PAY_MAX_AMOUNT,
+        "max_auto_pays_per_day": settings.MAX_AUTO_PAYS_PER_RIDER_PER_DAY,
+        "lookback_days": settings.DISPUTE_LOOKBACK_DAYS,
+        "payswift_url": settings.PAYSWIFT_BASE_URL,
+    }
+
+
+@router.get("/api/riders/{rider_id}/dossier")
+async def get_rider_dossier(
+    rider_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """Comprehensive rider intelligence context for Ops Agent Copilot & UI."""
+    stmt_rider = select(Rider).where(Rider.rider_id == rider_id)
+    res_rider = await session.execute(stmt_rider)
+    rider = res_rider.scalar_one_or_none()
+
+    if not rider:
+        raise HTTPException(status_code=404, detail=f"Rider {rider_id} not found")
+
+    # Fetch recent trips
+    stmt_trips = (
+        select(Trip)
+        .where(Trip.rider_id == rider_id)
+        .order_by(Trip.started_at.desc())
+        .limit(10)
+    )
+    res_trips = await session.execute(stmt_trips)
+    trips = res_trips.scalars().all()
+
+    # Fetch recent payouts
+    stmt_lines = (
+        select(PayoutLine)
+        .where(PayoutLine.rider_id == rider_id)
+        .order_by(PayoutLine.payout_date.desc())
+        .limit(10)
+    )
+    res_lines = await session.execute(stmt_lines)
+    lines = res_lines.scalars().all()
+
+    # Fetch pending ops items
+    stmt_ops = (
+        select(OpsPendingItem)
+        .where(OpsPendingItem.rider_id == rider_id, OpsPendingItem.status == "pending")
+    )
+    res_ops = await session.execute(stmt_ops)
+    pending_items = res_ops.scalars().all()
+
+    # Quick lifetime counts
+    completed_count = sum(1 for t in trips if t.status == "completed")
+    cancelled_count = sum(1 for t in trips if "cancelled" in t.status)
+    total_paid = sum(l.amount for l in lines)
+
+    return {
+        "rider_id": rider.rider_id,
+        "name": rider.name,
+        "city": rider.city,
+        "joined_on": rider.joined_on.isoformat() if rider.joined_on else None,
+        "stats": {
+            "recent_trips_count": len(trips),
+            "completed_trips": completed_count,
+            "cancelled_trips": cancelled_count,
+            "total_payout_records": len(lines),
+            "total_disbursed_in_ledger": total_paid,
+            "pending_ops_count": len(pending_items),
+        },
+        "recent_trips": [
+            {
+                "trip_id": t.trip_id,
+                "started_at": t.started_at.isoformat() if t.started_at else None,
+                "status": t.status,
+                "distance_km": t.distance_km,
+                "surge_multiplier": t.surge_multiplier,
+            }
+            for t in trips
+        ],
+        "payout_lines": [
+            {
+                "line_id": l.line_id,
+                "payout_date": l.payout_date.isoformat() if l.payout_date else None,
+                "line_type": l.line_type,
+                "trip_id": l.trip_id,
+                "amount": l.amount,
+            }
+            for l in lines
+        ],
+    }
+
