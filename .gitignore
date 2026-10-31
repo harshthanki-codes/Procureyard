@@ -8,3 +8,4 @@ quickdrop.db*
 .pytest_cache/
 .coverage
 *.log
+!demo.png

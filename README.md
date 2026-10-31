@@ -2,6 +2,10 @@
 
 Production-grade conversational AI dispute resolution desk for QuickDrop riders with deterministic financial guardrails, multi-turn memory, PaySwift chaos resilience, and an interactive Ops Review Portal.
 
+<p align="center">
+  <img src="demo.png" alt="QuickDrop Ops Dispute Desk & WhatsApp Simulator Demo" width="100%" />
+</p>
+
 ---
 
 ### Quick Start
